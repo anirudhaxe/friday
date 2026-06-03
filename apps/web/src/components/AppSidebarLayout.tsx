@@ -2,7 +2,7 @@ import { useEffect, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import ThreadSidebar from "./Sidebar";
-import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
+import { Sidebar, SidebarProvider, SidebarRail, useSidebar } from "./ui/sidebar";
 import {
   clearShortcutModifierState,
   syncShortcutModifierStateFromKeyboardEvent,
@@ -11,6 +11,24 @@ import {
 const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
 const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
+function SidebarToggleShortcut() {
+  const { toggleSidebar } = useSidebar();
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return;
+      if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+        event.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleSidebar]);
+
+  return null;
+}
+
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
@@ -69,6 +87,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         <ThreadSidebar />
         <SidebarRail />
       </Sidebar>
+      <SidebarToggleShortcut />
       {children}
     </SidebarProvider>
   );
