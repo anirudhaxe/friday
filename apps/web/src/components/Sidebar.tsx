@@ -2482,7 +2482,7 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)] group-data-[collapsible=icon]:pl-4 group-data-[collapsible=icon]:justify-center">
+    <SidebarHeader className="drag-region h-[45px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)] group-data-[collapsible=icon]:pl-4 group-data-[collapsible=icon]:justify-center">
       {wordmark}
     </SidebarHeader>
   ) : (
