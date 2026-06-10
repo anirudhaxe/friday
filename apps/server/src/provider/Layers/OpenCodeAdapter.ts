@@ -8,6 +8,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
+  type ThreadTokenUsageSnapshot,
   type ToolLifecycleItemType,
   TurnId,
   type UserInputQuestion,
@@ -80,6 +81,15 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  /** Tracks the last seen cumulative token snapshot to compute per-turn deltas. */
+  lastTokenSnapshot:
+    | {
+      readonly input: number;
+      readonly output: number;
+      readonly reasoning: number;
+      readonly cache: { readonly read: number; readonly write: number };
+    }
+    | undefined;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -955,6 +965,51 @@ export function makeOpenCodeAdapter(
           break;
         }
 
+        case "session.updated": {
+          const eventTokens = event.properties.info.tokens;
+          if (!eventTokens) break;
+
+          const prevTokens = context.lastTokenSnapshot;
+          if (
+            prevTokens &&
+            prevTokens.input === eventTokens.input &&
+            prevTokens.output === eventTokens.output
+          ) break;
+          context.lastTokenSnapshot = eventTokens;
+
+          const inputTokens = eventTokens.input;
+          const outputTokens = eventTokens.output;
+          const totalProcessedTokens = inputTokens + outputTokens;
+          if (totalProcessedTokens <= 0) break;
+
+          const prevTotal = prevTokens ? prevTokens.input + prevTokens.output : 0;
+          const lastInput = prevTokens ? eventTokens.input - prevTokens.input : inputTokens;
+          const lastOutput = prevTokens ? eventTokens.output - prevTokens.output : outputTokens;
+          const lastTotal = totalProcessedTokens - prevTotal;
+
+          const usage: ThreadTokenUsageSnapshot = {
+            usedTokens: totalProcessedTokens,
+            totalProcessedTokens,
+            ...(inputTokens > 0 ? { inputTokens } : {}),
+            ...(outputTokens > 0 ? { outputTokens } : {}),
+            ...(eventTokens.reasoning > 0 ? { reasoningOutputTokens: eventTokens.reasoning } : {}),
+            ...(eventTokens.cache.read > 0 ? { cachedInputTokens: eventTokens.cache.read } : {}),
+            ...(lastTotal > 0 ? { lastUsedTokens: lastTotal } : {}),
+            ...(lastInput > 0 ? { lastInputTokens: lastInput } : {}),
+            ...(lastOutput > 0 ? { lastOutputTokens: lastOutput } : {}),
+          };
+
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+            })),
+            type: "thread.token-usage.updated",
+            payload: { usage },
+          });
+          break;
+        }
+
         default:
           break;
       }
@@ -1124,6 +1179,7 @@ export function makeOpenCodeAdapter(
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          lastTokenSnapshot: undefined,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
