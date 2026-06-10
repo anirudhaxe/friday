@@ -46,6 +46,7 @@ import {
   openExternal,
   pickFolder,
   setTheme,
+  setWindowButtonVisibility,
   showContextMenu,
 } from "./methods/window.ts";
 
@@ -82,6 +83,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
+  yield* ipc.handle(setWindowButtonVisibility);
   yield* ipc.handle(createCloudAuthRequest);
   yield* ipc.handle(getCloudAuthToken);
   yield* ipc.handle(setCloudAuthToken);

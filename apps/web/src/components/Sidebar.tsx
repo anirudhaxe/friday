@@ -153,7 +153,6 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarSeparator,
-  SidebarTrigger,
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
@@ -2450,6 +2449,13 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }: {
   isElectron: boolean;
 }) {
+  const { state } = useSidebar();
+
+  useEffect(() => {
+    if (!isElectron) return;
+    window.desktopBridge?.setWindowButtonVisibility(state === "expanded");
+  }, [isElectron, state]);
+
   const wordmark = (
     <div className="flex flex-col gap-0.5">
       <Tooltip>
@@ -2471,14 +2477,12 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
           Version {APP_VERSION}
         </TooltipPopup>
       </Tooltip>
-      <div className="flex justify-end">
-        <SidebarTrigger className="shrink-0" size="icon-sm" />
-      </div>
+
     </div>
   );
 
   return isElectron ? (
-    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]">
+    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)] group-data-[collapsible=icon]:pl-4 group-data-[collapsible=icon]:justify-center">
       {wordmark}
     </SidebarHeader>
   ) : (
