@@ -199,7 +199,9 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     otlpExportIntervalMs: config.otlpExportIntervalMs,
     branding,
     displayName,
-    appUserModelId: isDevelopment ? "com.anirudhaxe.friday.dev" : "com.anirudhaxe.friday",
+    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
+      isDevelopment ? "com.anirudhaxe.friday.dev" : "com.anirudhaxe.friday",
+    ),
     linuxDesktopEntryName: isDevelopment ? "friday-dev.desktop" : "friday.desktop",
     linuxWmClass: isDevelopment ? "friday-dev" : "friday",
     userDataDirName,
