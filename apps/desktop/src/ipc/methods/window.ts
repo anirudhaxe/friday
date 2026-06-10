@@ -124,6 +124,21 @@ export const showContextMenu = makeIpcMethod({
   }),
 });
 
+export const setWindowButtonVisibility = makeIpcMethod({
+  channel: IpcChannels.SET_WINDOW_BUTTON_VISIBILITY_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setWindowButtonVisibility")(function* (visible) {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.focusedMainOrFirst;
+    if (Option.isSome(window)) {
+      yield* Effect.sync(() => {
+        window.value.setWindowButtonVisibility(visible);
+      });
+    }
+  }),
+});
+
 export const openExternal = makeIpcMethod({
   channel: IpcChannels.OPEN_EXTERNAL_CHANNEL,
   payload: Schema.String,

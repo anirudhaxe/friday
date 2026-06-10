@@ -18,7 +18,11 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import { serializeComposerMentionPath } from "@t3tools/shared/composerTrigger";
-import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  getProviderOptionDescriptors,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
 import {
   memo,
   useCallback,
@@ -93,7 +97,10 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { getProviderInteractionModeToggle } from "../../providerModels";
+import {
+  getProviderInteractionModeToggle,
+  getProviderModelCapabilities,
+} from "../../providerModels";
 import {
   deriveProviderInstanceEntries,
   resolveProviderDriverKindForInstanceSelection,
@@ -583,6 +590,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (store) => store.syncPersistedAttachments,
   );
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
+  const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
 
   // ------------------------------------------------------------------
   // Model state
@@ -1645,12 +1653,75 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
     event: KeyboardEvent,
   ) => {
-    if (key === "Tab" && event.shiftKey) {
-      toggleInteractionMode();
-      return true;
-    }
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive = composerMenuOpenRef.current || trigger !== null;
+
+    if (!menuIsActive) {
+      if (key === "Tab" && !event.shiftKey) {
+        const caps = getProviderModelCapabilities(
+          selectedProviderModels,
+          selectedModel,
+          selectedProvider,
+        );
+        const descriptors = getProviderOptionDescriptors({
+          caps,
+          selections: composerModelOptions?.[selectedInstanceId],
+        });
+        const agentDesc = descriptors.find((d) => d.type === "select" && d.id === "agent");
+        if (agentDesc && agentDesc.type === "select" && agentDesc.options.length > 0) {
+          const opts = agentDesc.options;
+          const idx = agentDesc.currentValue
+            ? opts.findIndex((o) => o.id === agentDesc.currentValue)
+            : -1;
+          const nextId = opts[idx < 0 ? 0 : (idx + 1) % opts.length]!.id;
+          setProviderModelOptions(
+            composerDraftTarget,
+            selectedProvider,
+            [
+              ...(composerModelOptions?.[selectedInstanceId] ?? []).filter((o) => o.id !== "agent"),
+              { id: "agent", value: nextId },
+            ],
+            { instanceId: selectedInstanceId, model: selectedModel, persistSticky: true },
+          );
+          return true;
+        }
+      }
+
+      if (key === "Tab" && event.shiftKey) {
+        const caps = getProviderModelCapabilities(
+          selectedProviderModels,
+          selectedModel,
+          selectedProvider,
+        );
+        const descriptors = getProviderOptionDescriptors({
+          caps,
+          selections: composerModelOptions?.[selectedInstanceId],
+        });
+        const variantDesc = descriptors.find((d) => d.type === "select" && d.id === "variant");
+        if (variantDesc && variantDesc.type === "select" && variantDesc.options.length > 0) {
+          const opts = variantDesc.options;
+          const idx = variantDesc.currentValue
+            ? opts.findIndex((o) => o.id === variantDesc.currentValue)
+            : -1;
+          const nextId = opts[idx < 0 ? 0 : (idx + 1) % opts.length]!.id;
+          setProviderModelOptions(
+            composerDraftTarget,
+            selectedProvider,
+            [
+              ...(composerModelOptions?.[selectedInstanceId] ?? []).filter(
+                (o) => o.id !== "variant",
+              ),
+              { id: "variant", value: nextId },
+            ],
+            { instanceId: selectedInstanceId, model: selectedModel, persistSticky: true },
+          );
+          return true;
+        }
+        toggleInteractionMode();
+        return true;
+      }
+    }
+
     if (menuIsActive) {
       const currentItems = composerMenuItemsRef.current;
       const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
