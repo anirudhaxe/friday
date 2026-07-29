@@ -815,24 +815,68 @@ export function makeOpenCodeAdapter(
       if (context.modelContextWindowCache !== undefined) {
         return context.modelContextWindowCache.get(modelId);
       }
-      const response = yield* runOpenCodeSdk("v2.model.list", () =>
+
+      const cache = new Map<string, number>();
+
+      const seedCache = (model: {
+        readonly id: string;
+        readonly providerID?: string;
+        readonly limit?: { readonly context?: number };
+      }) => {
+        if (typeof model.limit?.context === "number" && model.limit.context > 0) {
+          const ids = [model.id];
+          if (model.providerID && !model.id.includes("/")) {
+            ids.push(`${model.providerID}/${model.id}`);
+          }
+          for (const id of ids) {
+            cache.set(id, model.limit.context);
+          }
+        }
+      };
+
+      // Primary: v2 model list
+      const v2Response = yield* runOpenCodeSdk("v2.model.list", () =>
         context.client.v2.model.list({ location: { directory: context.directory } }),
       ).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
-      const raw = response as { readonly data?: unknown } | undefined;
-      const modelsRaw = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw) ? raw : [];
-      if (modelsRaw.length === 0) {
-        context.modelContextWindowCache = new Map();
-        return undefined;
-      }
-      const cache = new Map<string, number>();
-      for (const model of modelsRaw as ReadonlyArray<{
-        readonly id: string;
-        readonly limit?: { readonly context?: number };
-      }>) {
-        if (typeof model.limit?.context === "number" && model.limit.context > 0) {
-          cache.set(model.id, model.limit.context);
+      const v2Raw = v2Response as { readonly data?: unknown } | undefined;
+      const v2Models = Array.isArray(v2Raw?.data) ? v2Raw.data : Array.isArray(v2Raw) ? v2Raw : [];
+      if (Array.isArray(v2Models) && v2Models.length > 0) {
+        for (const model of v2Models as ReadonlyArray<{
+          readonly id: string;
+          readonly providerID?: string;
+          readonly limit?: { readonly context?: number };
+        }>) {
+          seedCache(model);
         }
       }
+
+      // Fallback: v1 config providers
+      if (cache.size === 0) {
+        const configResponse = yield* runOpenCodeSdk("config.providers", () =>
+          context.client.config.providers({ directory: context.directory }),
+        ).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+        const configRaw = configResponse as
+          | { readonly data?: { readonly providers?: ReadonlyArray<unknown> } }
+          | undefined;
+        const providers = Array.isArray(configRaw?.data?.providers) ? configRaw.data.providers : [];
+        for (const provider of providers as ReadonlyArray<{
+          readonly id: string;
+          readonly models?: Record<string, unknown>;
+        }>) {
+          if (provider.models && typeof provider.models === "object") {
+            for (const model of Object.values(provider.models) as Array<unknown>) {
+              const m = model as {
+                readonly id: string;
+                readonly limit?: { readonly context?: number };
+              };
+              if (typeof m.id === "string") {
+                seedCache({ ...m, providerID: provider.id });
+              }
+            }
+          }
+        }
+      }
+
       context.modelContextWindowCache = cache;
       return cache.get(modelId);
     });

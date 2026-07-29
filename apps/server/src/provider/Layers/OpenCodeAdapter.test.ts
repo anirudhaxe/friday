@@ -74,7 +74,11 @@ const runtimeMock = {
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
-    v2Models: null as Array<{ id: string; limit: { context: number } }> | null,
+    v2Models: null as Array<{ id: string; providerID?: string; limit: { context: number } }> | null,
+    configProviders: [] as Array<{
+      id: string;
+      models: Record<string, { id: string; limit: { context: number } }>;
+    }>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -96,6 +100,7 @@ const runtimeMock = {
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
     this.state.v2Models = null;
+    this.state.configProviders = [];
   },
 };
 
@@ -220,6 +225,14 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             data: runtimeMock.state.v2Models ?? [],
           }),
         },
+      },
+      config: {
+        providers: async () => ({
+          data: {
+            providers: runtimeMock.state.configProviders,
+            default: {},
+          },
+        }),
       },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
@@ -1541,6 +1554,69 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const event = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
       NodeAssert.equal(event._tag, "None");
+    }),
+  );
+
+  it.effect("falls back to v1 config.providers when v2 model list returns empty", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-token-v1-fallback");
+      runtimeMock.state.v2Models = []; // v2 returns nothing
+      runtimeMock.state.configProviders = [
+        {
+          id: "anthropic",
+          models: {
+            "claude-sonnet-4-5": {
+              id: "claude-sonnet-4-5",
+              limit: { context: 200_000 },
+            },
+          },
+        },
+      ];
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "message.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            info: {
+              id: "msg-v1-fallback",
+              role: "assistant",
+              modelID: "anthropic/claude-sonnet-4-5",
+              tokens: {
+                input: 1_000,
+                output: 100,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+              },
+            },
+          },
+        },
+      ];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const event = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(event._tag, "Some");
+      if (event._tag !== "Some") {
+        return;
+      }
+      if (event.value.type !== "thread.token-usage.updated") {
+        return;
+      }
+
+      NodeAssert.equal(event.value.payload.usage.maxTokens, 200_000);
+      NodeAssert.equal(event.value.payload.usage.usedTokens, 1_100);
     }),
   );
 });
