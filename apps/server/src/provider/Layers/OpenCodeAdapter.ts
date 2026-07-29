@@ -221,15 +221,31 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
-  /** Tracks the last seen cumulative token snapshot to compute per-turn deltas. */
+  /** Cumulative session-level token totals from `session.updated` (for `totalProcessedTokens`). */
   lastTokenSnapshot:
     | {
-      readonly input: number;
-      readonly output: number;
-      readonly reasoning: number;
-      readonly cache: { readonly read: number; readonly write: number };
-    }
+        readonly input: number;
+        readonly output: number;
+        readonly reasoning: number;
+        readonly cache: { readonly read: number; readonly write: number };
+      }
     | undefined;
+  /**
+   * Per-message token data from the latest assistant `message.updated` event.
+   * The `input` field approximates the current context window size because
+   * the LLM receives the full conversation history as input on each call.
+   */
+  lastAssistantTokenUsage:
+    | {
+        readonly input: number;
+        readonly output: number;
+        readonly reasoning: number;
+        readonly cache: { readonly read: number; readonly write: number };
+        readonly modelId: string;
+      }
+    | undefined;
+  /** Lazy-initialized cache mapping model IDs to their context window limits. */
+  modelContextWindowCache: Map<string, number> | undefined;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -792,6 +808,83 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    const getModelContextWindow = Effect.fn("getModelContextWindow")(function* (
+      context: OpenCodeSessionContext,
+      modelId: string,
+    ) {
+      if (context.modelContextWindowCache !== undefined) {
+        return context.modelContextWindowCache.get(modelId);
+      }
+      const response = yield* runOpenCodeSdk("v2.model.list", () =>
+        context.client.v2.model.list({ location: { directory: context.directory } }),
+      ).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+      const raw = response as { readonly data?: unknown } | undefined;
+      const modelsRaw = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw) ? raw : [];
+      if (modelsRaw.length === 0) {
+        context.modelContextWindowCache = new Map();
+        return undefined;
+      }
+      const cache = new Map<string, number>();
+      for (const model of modelsRaw as ReadonlyArray<{
+        readonly id: string;
+        readonly limit?: { readonly context?: number };
+      }>) {
+        if (typeof model.limit?.context === "number" && model.limit.context > 0) {
+          cache.set(model.id, model.limit.context);
+        }
+      }
+      context.modelContextWindowCache = cache;
+      return cache.get(modelId);
+    });
+
+    const emitTokenUsage = Effect.fn("emitTokenUsage")(function* (
+      context: OpenCodeSessionContext,
+      turnId: TurnId | undefined,
+    ) {
+      const messageTokens = context.lastAssistantTokenUsage;
+      if (!messageTokens || messageTokens.input <= 0) {
+        return;
+      }
+
+      const usedTokens = messageTokens.input + messageTokens.output + messageTokens.reasoning;
+
+      const cumulative = context.lastTokenSnapshot;
+      const totalProcessedTokens = cumulative ? cumulative.input + cumulative.output : undefined;
+
+      const maxTokens = yield* getModelContextWindow(context, messageTokens.modelId);
+
+      const usage: ThreadTokenUsageSnapshot = {
+        usedTokens,
+        ...(totalProcessedTokens !== undefined && totalProcessedTokens > usedTokens
+          ? { totalProcessedTokens }
+          : {}),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...(messageTokens.input > 0 ? { inputTokens: messageTokens.input } : {}),
+        ...(messageTokens.output > 0 ? { outputTokens: messageTokens.output } : {}),
+        ...(messageTokens.reasoning > 0 ? { reasoningOutputTokens: messageTokens.reasoning } : {}),
+        ...(messageTokens.cache.read > 0 ? { cachedInputTokens: messageTokens.cache.read } : {}),
+        lastUsedTokens: usedTokens,
+        ...(messageTokens.input > 0 ? { lastInputTokens: messageTokens.input } : {}),
+        ...(messageTokens.output > 0 ? { lastOutputTokens: messageTokens.output } : {}),
+        ...(messageTokens.reasoning > 0
+          ? { lastReasoningOutputTokens: messageTokens.reasoning }
+          : {}),
+        ...(messageTokens.cache.read > 0
+          ? { lastCachedInputTokens: messageTokens.cache.read }
+          : {}),
+        compactsAutomatically: true,
+      };
+
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId,
+        })),
+        type: "thread.token-usage.updated",
+        payload: { usage },
+      });
+    });
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -832,12 +925,46 @@ export function makeOpenCodeAdapter(
               },
             });
           }
+
+          const eventTokens = event.properties.info.tokens;
+          if (eventTokens) {
+            const prevTokens = context.lastTokenSnapshot;
+            if (
+              !prevTokens ||
+              prevTokens.input !== eventTokens.input ||
+              prevTokens.output !== eventTokens.output
+            ) {
+              context.lastTokenSnapshot = eventTokens;
+            }
+          }
           break;
         }
 
         case "message.updated": {
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
           if (event.properties.info.role === "assistant") {
+            const info = event.properties.info as {
+              id: string;
+              role: "assistant";
+              modelID?: string;
+              tokens?: {
+                input: number;
+                output: number;
+                reasoning: number;
+                cache: { read: number; write: number };
+              };
+            };
+            if (info.tokens && info.modelID && info.tokens.input > 0) {
+              context.lastAssistantTokenUsage = {
+                input: info.tokens.input,
+                output: info.tokens.output,
+                reasoning: info.tokens.reasoning,
+                cache: info.tokens.cache,
+                modelId: info.modelID,
+              };
+              yield* emitTokenUsage(context, turnId);
+            }
+
             for (const part of context.partById.values()) {
               if (part.messageID !== event.properties.info.id) {
                 continue;
@@ -1125,51 +1252,6 @@ export function makeOpenCodeAdapter(
           break;
         }
 
-        case "session.updated": {
-          const eventTokens = event.properties.info.tokens;
-          if (!eventTokens) break;
-
-          const prevTokens = context.lastTokenSnapshot;
-          if (
-            prevTokens &&
-            prevTokens.input === eventTokens.input &&
-            prevTokens.output === eventTokens.output
-          ) break;
-          context.lastTokenSnapshot = eventTokens;
-
-          const inputTokens = eventTokens.input;
-          const outputTokens = eventTokens.output;
-          const totalProcessedTokens = inputTokens + outputTokens;
-          if (totalProcessedTokens <= 0) break;
-
-          const prevTotal = prevTokens ? prevTokens.input + prevTokens.output : 0;
-          const lastInput = prevTokens ? eventTokens.input - prevTokens.input : inputTokens;
-          const lastOutput = prevTokens ? eventTokens.output - prevTokens.output : outputTokens;
-          const lastTotal = totalProcessedTokens - prevTotal;
-
-          const usage: ThreadTokenUsageSnapshot = {
-            usedTokens: totalProcessedTokens,
-            totalProcessedTokens,
-            ...(inputTokens > 0 ? { inputTokens } : {}),
-            ...(outputTokens > 0 ? { outputTokens } : {}),
-            ...(eventTokens.reasoning > 0 ? { reasoningOutputTokens: eventTokens.reasoning } : {}),
-            ...(eventTokens.cache.read > 0 ? { cachedInputTokens: eventTokens.cache.read } : {}),
-            ...(lastTotal > 0 ? { lastUsedTokens: lastTotal } : {}),
-            ...(lastInput > 0 ? { lastInputTokens: lastInput } : {}),
-            ...(lastOutput > 0 ? { lastOutputTokens: lastOutput } : {}),
-          };
-
-          yield* emit({
-            ...(yield* buildEventBase({
-              threadId: context.session.threadId,
-              turnId,
-            })),
-            type: "thread.token-usage.updated",
-            payload: { usage },
-          });
-          break;
-        }
-
         default:
           break;
       }
@@ -1440,6 +1522,8 @@ export function makeOpenCodeAdapter(
           activeAgent: undefined,
           activeVariant: undefined,
           lastTokenSnapshot: undefined,
+          lastAssistantTokenUsage: undefined,
+          modelContextWindowCache: undefined,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
