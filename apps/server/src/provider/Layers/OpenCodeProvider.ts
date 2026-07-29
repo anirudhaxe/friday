@@ -404,29 +404,47 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   }
 
   const inventoryExit = yield* Effect.exit(
-    (isExternalServer
-      ? Effect.scoped(
-          Effect.gen(function* () {
-            const server = yield* openCodeRuntime.connectToOpenCodeServer({
-              binaryPath: openCodeSettings.binaryPath,
-              serverUrl: openCodeSettings.serverUrl,
-              environment: resolvedEnvironment,
-            });
-            return yield* openCodeRuntime.loadOpenCodeInventory(
-              openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory: cwd,
-                ...(openCodeSettings.serverPassword
-                  ? { serverPassword: openCodeSettings.serverPassword }
-                  : {}),
-              }),
-            );
-          }),
-        )
-      : openCodeRuntime.loadInventoryFromCli({
+    // (isExternalServer
+    //   ? Effect.scoped(
+    //       Effect.gen(function* () {
+    //         const server = yield* openCodeRuntime.connectToOpenCodeServer({
+    //           binaryPath: openCodeSettings.binaryPath,
+    //           serverUrl: openCodeSettings.serverUrl,
+    //           environment: resolvedEnvironment,
+    //         });
+    //         return yield* openCodeRuntime.loadOpenCodeInventory(
+    //           openCodeRuntime.createOpenCodeSdkClient({
+    //             baseUrl: server.url,
+    //             directory: cwd,
+    //             ...(openCodeSettings.serverPassword
+    //               ? { serverPassword: openCodeSettings.serverPassword }
+    //               : {}),
+    //           }),
+    //         );
+    //       }),
+    //     )
+    //   : openCodeRuntime.loadInventoryFromCli({
+    //       binaryPath: openCodeSettings.binaryPath,
+    //       environment: resolvedEnvironment,
+    //     })
+    // ).pipe(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* openCodeRuntime.connectToOpenCodeServer({
           binaryPath: openCodeSettings.binaryPath,
+          serverUrl: openCodeSettings.serverUrl,
           environment: resolvedEnvironment,
-        })
+        });
+        return yield* openCodeRuntime.loadOpenCodeInventory(
+          openCodeRuntime.createOpenCodeSdkClient({
+            baseUrl: server.url,
+            directory: cwd,
+            ...(openCodeSettings.serverPassword
+              ? { serverPassword: openCodeSettings.serverPassword }
+              : {}),
+          }),
+        );
+      }),
     ).pipe(
       Effect.mapError(
         (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
@@ -467,4 +485,3 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     },
   });
 });
-

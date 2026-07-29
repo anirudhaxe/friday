@@ -741,6 +741,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       return {
         providerList: { all: allProviders, default: {}, connected },
         agents,
+        skills: [],
       };
     });
 
