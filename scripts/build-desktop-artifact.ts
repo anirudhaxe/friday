@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import * as NodeModule from "node:module";
-import * as NFS from "node:fs";
-import * as NPath from "node:path";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -628,9 +626,6 @@ interface StagePackageJson {
 }
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
-// export const DESKTOP_ASAR_UNPACK = [
-//   "node_modules/@ff-labs/fff-bin-*/**/*",
-// ] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // T3 Code always passes the user's installed Claude executable to the SDK,
@@ -930,57 +925,6 @@ export function resolveClerkPasskeyNativeArtifacts(
 // pnpm nests the architecture package under @clerk/electron-passkeys, while electron-builder only
 // retains collected top-level dependencies. The SDK loader checks beside index.js first, so stage
 // the binary there and let electron-builder's native-addon handling unpack it from the ASAR.
-const CLERK_JS_STRIPPED_DEPS = [
-  "@base-org/account",
-  "@coinbase/wallet-sdk",
-  "@solana/wallet-adapter-base",
-  "@solana/wallet-adapter-react",
-  "@solana/wallet-standard",
-  "@wallet-standard/core",
-];
-
-const stageFixClerkJavascriptManifests = Effect.fn("stageFixClerkJavascriptManifests")(function* (
-  stageAppDir: string,
-  verbose: boolean,
-) {
-  const pnpmStoreDir = NPath.join(stageAppDir, "node_modules/.pnpm");
-  let entries: string[];
-  try {
-    entries = NFS.readdirSync(pnpmStoreDir);
-  } catch {
-    return;
-  }
-  const clerkJsDirs = entries
-    .filter((e) => e.startsWith("@clerk+clerk-js@"))
-    .map((e) => NPath.join(pnpmStoreDir, e, "node_modules/@clerk/clerk-js"));
-  for (const dir of clerkJsDirs) {
-    const manifestPath = NPath.join(dir, "package.json");
-    let raw: string;
-    try {
-      raw = NFS.readFileSync(manifestPath, "utf-8");
-    } catch {
-      continue;
-    }
-    const manifest = JSON.parse(raw);
-    if (!manifest.dependencies) continue;
-    let changed = false;
-    for (const dep of CLERK_JS_STRIPPED_DEPS) {
-      if (dep in manifest.dependencies) {
-        delete manifest.dependencies[dep];
-        changed = true;
-      }
-    }
-    if (changed) {
-      NFS.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      if (verbose) {
-        yield* Effect.log(
-          `[desktop-artifact] Removed unused crypto deps from @clerk/clerk-js manifest`,
-        );
-      }
-    }
-  }
-});
-
 const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinaries")(function* (
   stageAppDir: string,
   platform: typeof BuildPlatform.Type,
@@ -1599,27 +1543,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "Friday-${version}-${arch}.${ext}",
-    // directories: {
-    //   buildResources: "apps/desktop/resources",
-    // },
-    // The Windows primary backend runs the server bundle through
-    // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
-    // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
-    // cannot read inside an asar archive, so everything it loads must be on the
-    // real filesystem. The server bundle externalizes its runtime dependencies
-    // (effect, @effect/*, node-pty, ...) to node_modules rather than inlining
-    // them, so unpacking just the bundle + node-pty isn't enough — the Linux Node
-    // fails with ERR_MODULE_NOT_FOUND (e.g. "Cannot find package 'effect'") before
-    // it even reaches node-pty. Unpack the server bundle AND the whole
-    // node_modules tree so every import resolves (this also covers the fff native
-    // binaries in DESKTOP_ASAR_UNPACK). The Windows primary keeps reading the same
-    // files through the asar (transparently redirected to the unpacked copy), so
-    // there's no duplication.
-    // asarUnpack: [
-    //   ...DESKTOP_ASAR_UNPACK,
-    //   "apps/server/dist/**",
-    //   "**/node_modules/**",
-    // ],
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [...DESKTOP_FILE_EXCLUSIONS],
     directories: {
@@ -2048,7 +1971,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     }),
     { label: "vp install --prod", verbose: options.verbose },
   );
-  yield* stageFixClerkJavascriptManifests(stageAppDir, options.verbose);
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
 
   // WSL is Windows-only, so only the Windows artifact carries the Linux backend
